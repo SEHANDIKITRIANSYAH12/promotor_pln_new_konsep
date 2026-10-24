@@ -1,0 +1,210 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// -------------------------------------------------------------
+// 1. DATA MASTER & KONTRAK
+// -------------------------------------------------------------
+enum JobType {
+  PASANG_BARU
+  PERUBAHAN_DAYA
+  PERLUASAN_JARINGAN
+  GARDU
+}
+
+enum SurveyStatus {
+  DRAFT
+  WAITING_VERIFICATION
+  VERIFIED
+  REJECTED
+}
+
+enum DaftungStatus {
+  READY_TO_APPLY
+  WO_ISSUED
+  COMPLETED
+}
+
+enum WoStatus {
+  DRAFT
+  RELEASED
+  IN_PROGRESS
+  SJ_VERIFIED
+  COMPLETED
+}
+
+enum WoCategory {
+  TIANG
+  PAKET_1
+  PAKET_2
+}
+
+model Contract {
+  id           String      @id @default(cuid())
+  spkNumber    String      @unique
+  vendorName   String
+  type         String      // JASA | MATERIAL
+  validFrom    DateTime
+  validTo      DateTime
+  totalAmount  Decimal     @db.Decimal(15, 2)
+  usedAmount   Decimal     @default(0) @db.Decimal(15, 2)
+  status       String      @default("ACTIVE")
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  workOrders   WorkOrder[]
+}
+
+model MaterialMaster {
+  id           String             @id @default(cuid())
+  code         String             @unique
+  name         String
+  category     String
+  unit         String             // Batang, Meter, Unit, Buah, Set
+  stockCurrent Decimal            @default(0) @db.Decimal(10, 2)
+  stockMin     Decimal            @default(0) @db.Decimal(10, 2)
+  reservations WoMaterialDetail[]
+  bomItems     BomItem[]
+}
+
+model StandardConstruction {
+  id          String    @id @default(cuid())
+  code        String    @unique
+  name        String
+  category    String
+  unit        String
+  isActive    Boolean   @default(true)
+  bomItems    BomItem[]
+  poles       SurveyPole[]
+}
+
+model BomItem {
+  id          String               @id @default(cuid())
+  standardId  String
+  materialId  String
+  qty         Decimal              @db.Decimal(10, 2)
+  standard    StandardConstruction @relation(fields: [standardId], references: [id], onDelete: Cascade)
+  material    MaterialMaster       @relation(fields: [materialId], references: [id])
+}
+
+// -------------------------------------------------------------
+// 2. SURVEY & GEOTAGGING TIANG
+// -------------------------------------------------------------
+model Survey {
+  id             String       @id @default(cuid())
+  surveyNumber   String       @unique // Mis. SRV-2026-0001
+  customerName   String
+  idpel          String?
+  jobType        JobType
+  location       String
+  address        String?
+  officerName    String?
+  status         SurveyStatus @default(WAITING_VERIFICATION)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  poles          SurveyPole[]
+  daftung        Daftung?
+}
+
+model SurveyPole {
+  id           String                @id @default(cuid())
+  surveyId     String
+  poleNumber   String                // T1, T2, ...
+  standardId   String?
+  standardName String                // Tiang A1, Tiang B2, dll
+  qty          Int                   @default(1)
+  latitude     Float?
+  longitude    Float?
+  note         String?               // Keterangan khusus tiang (posisi, sudut, dll)
+  photoUrl     String?               // Dokumentasi foto visual tiang (Base64 / URL storage)
+  createdAt    DateTime              @default(now())
+
+  survey       Survey                @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+  standard     StandardConstruction? @relation(fields: [standardId], references: [id])
+}
+
+// -------------------------------------------------------------
+// 3. DAFTUNG & WORK ORDER (WO)
+// -------------------------------------------------------------
+model Daftung {
+  id             String        @id @default(cuid())
+  daftungNumber  String        @unique // Mis. DF-2026-0001
+  surveyId       String        @unique
+  finalName      String
+  finalIdpel     String
+  paymentStatus  String        // SUDAH_BAYAR | BELUM_BAYAR
+  nidiStatus     Boolean       @default(false)
+  sloStatus      Boolean       @default(false)
+  status         DaftungStatus @default(READY_TO_APPLY)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  survey         Survey        @relation(fields: [surveyId], references: [id])
+  workOrders     WorkOrder[]
+}
+
+model WorkOrder {
+  id             String             @id @default(cuid())
+  woNumber       String             @unique // Mis. WO-2026-0001
+  daftungId      String
+  category       WoCategory         // TIANG, PAKET_1, PAKET_2
+  contractId     String?
+  vendorName     String
+  supervisor1    String
+  supervisor2    String?
+  serviceValue   Decimal            @db.Decimal(15, 2)
+  progress       Int                @default(0) // 0 - 100%
+  status         WoStatus           @default(DRAFT)
+  reservationLink String?           // Link token sementara vendor untuk pengambilan
+  reservationExpiry DateTime?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  daftung        Daftung            @relation(fields: [daftungId], references: [id], onDelete: Cascade)
+  contract       Contract?          @relation(fields: [contractId], references: [id])
+  materials      WoMaterialDetail[]
+  suratJalan     SuratJalan[]
+}
+
+model WoMaterialDetail {
+  id            String         @id @default(cuid())
+  workOrderId   String
+  materialId    String
+  qtyReksis     Decimal        @db.Decimal(10, 2)
+  qtyAllocated  Decimal        @db.Decimal(10, 2)
+  qtyReserved   Decimal        @default(0) @db.Decimal(10, 2)
+  qtyTaken      Decimal        @default(0) @db.Decimal(10, 2)
+
+  workOrder     WorkOrder      @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  material      MaterialMaster @relation(fields: [materialId], references: [id])
+}
+
+// -------------------------------------------------------------
+// 4. PENGAWASAN, SURAT JALAN & AUDIT LOG
+// -------------------------------------------------------------
+model SuratJalan {
+  id           String      @id @default(cuid())
+  sjNumber     String      @unique
+  workOrderId  String
+  issuedDate   DateTime    @default(now())
+  isVerified   Boolean     @default(false)
+  verifiedBy   String?
+  verifiedAt   DateTime?
+
+  workOrder    WorkOrder   @relation(fields: [workOrderId], references: [id])
+}
+
+model AuditLog {
+  id         String    @id @default(cuid())
+  timestamp  DateTime  @default(now())
+  userRole   String
+  action     String
+  objectRef  String
+  source     String
+  details    String?
+}
